@@ -309,43 +309,33 @@ public class FurnitureFixer : EditorWindow
         var targets = AllInScene<FlashlightTarget>().ToList();
         if (targets.Count == 0) { Say("• Кровати: в сцене нет Flashlight Target"); return; }
         var beds = pieces.Where(p => Is(p, "Bed")).ToList();
-        foreach (Piece b in beds) b.used = false;
+        var assignedModels = new HashSet<Transform>(targets.Where(ft => ft.model != null).Select(ft => ft.model));
         int ok = 0;
         foreach (FlashlightTarget ft in targets)
         {
-            Vector3 refPos = ft.transform.position;
-            Bounds zone = new Bounds();
-            bool hasZone = false;
-            if (ft.insideZone is BoxCollider bc)
+            if (ft.model != null)
             {
-                zone = new Bounds(bc.transform.TransformPoint(bc.center), Vector3.Scale(bc.size, Abs(bc.transform.lossyScale)));
-                hasZone = true;
-                refPos = zone.center;
-            }
-            else
-            {
-                Bounds own = MeshBounds(ft.gameObject, true);
-                if (own.size != Vector3.zero) refPos = own.center;
+                ok++;
+                continue;
             }
 
-            Piece best = null; float bestD = 1e9f;
-            foreach (Piece b in beds)
-            {
-                if (b.used) continue;
-                Vector3 c = b.bounds.center;
-                float d = Flat(c - refPos);
-                bool inZone = hasZone && zone.Contains(new Vector3(c.x, zone.center.y, c.z));
-                if (inZone) d -= 100f;                 // кровать внутри палаты — в приоритете
-                if (d < bestD) { bestD = d; best = b; }
-            }
-            if (best == null || bestD > 4f)
+            Vector3 refPos = ft.transform.position;
+            Bounds own = MeshBounds(ft.gameObject, true);
+            if (own.size != Vector3.zero) refPos = own.center;
+
+            Collider zone = ft.insideZone;
+            Piece best = Nearest(beds.Where(b => !assignedModels.Contains(b.root.transform) &&
+                (zone != null ? zone.bounds.Contains(b.bounds.center) : Mathf.Abs(b.bounds.center.y - refPos.y) < 1.5f)),
+                refPos, 4f);
+            if (best == null)
             {
                 Say("✗ " + Path(ft.transform) + ": рядом нет кровати из мебели (ближе 4 м)");
                 continue;
             }
-            best.used = true;
+
             Undo.RecordObject(ft, "Кровать");
             ft.model = best.root.transform;
+            assignedModels.Add(ft.model);
             EditorUtility.SetDirty(ft);
             if (!ft.gameObject.activeSelf) { Undo.RecordObject(ft.gameObject, "Вкл"); ft.gameObject.SetActive(true); }
             // кубики старой кровати — спрятать

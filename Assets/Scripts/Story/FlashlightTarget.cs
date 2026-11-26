@@ -1,10 +1,7 @@
 using UnityEngine;
 using UnityEngine.Events;
 
-// «Посвети фонариком на предмет» — например, на кровать в палате.
-// Срабатывает один раз, когда фонарик игрока включён, предмет попал в луч
-// и игрок держит на нём свет Hold Time секунд (и ничего не загораживает).
-// Вешается на предмет (кровать). У предмета или его деталей должен быть Collider.
+// Засчитывает непрерывное освещение кровати, пока игрок находится в палате.
 public class FlashlightTarget : MonoBehaviour
 {
     [Tooltip("Сколько секунд держать свет на предмете")]
@@ -12,92 +9,103 @@ public class FlashlightTarget : MonoBehaviour
     [Tooltip("С какого расстояния засчитывается (метры)")]
     public float maxDistance = 6f;
 
-    [Tooltip("Зона палаты (Box Collider с Is Trigger). Если указана — засчитывается, только когда игрок ВНУТРИ палаты, а не из коридора")]
+    [Tooltip("Зона палаты (Box Collider с Is Trigger)")]
     public Collider insideZone;
 
-    [Tooltip("Настоящая кровать из мебели. Если указана — светить надо на неё (ставит пункт меню Catatonia → Починить мебель)")]
+    [Tooltip("Модель кровати, на которую нужно светить")]
     public Transform model;
 
     [Tooltip("Что произойдёт, когда посветили")]
     public UnityEvent onLit;
 
     Flashlight flashlight;
+    Renderer[] targetRenderers;
     float timer;
     bool done;
+
+    Transform Target => model != null ? model : transform;
+
+    void Awake()
+    {
+        targetRenderers = Target.GetComponentsInChildren<Renderer>(true);
+    }
+
+    void OnDisable()
+    {
+        timer = 0f;
+    }
 
     void Update()
     {
         if (done) return;
         if (flashlight == null) flashlight = FindObjectOfType<Flashlight>();
-        if (flashlight == null || !flashlight.IsOn) { timer = 0f; return; }
-        // Палаты считаются только после того, как на экране появился список палат
-        if (RoomChecklist.Instance != null && !RoomChecklist.Instance.IsShown) { timer = 0f; return; }
 
-        // игрок должен стоять в палате, а не светить из коридора
-        if (insideZone != null && !insideZone.bounds.Contains(flashlight.transform.position)) { timer = 0f; return; }
-
-        if (IsLit()) timer += Time.deltaTime;
-        else timer = 0f;
-
-        if (timer >= holdTime)
+        RoomChecklist checklist = RoomChecklist.Instance;
+        if (flashlight == null || !flashlight.hasFlashlight || !flashlight.IsOn ||
+            (checklist != null && !checklist.IsShown))
         {
-            done = true;
-            onLit.Invoke();
+            timer = 0f;
+            return;
         }
-    }
 
-    bool IsLit()
-    {
         Light lamp = flashlight.Lamp;
-        Vector3 from = lamp.transform.position;
-        Vector3 target = Center();
-        Vector3 dir = target - from;
-        float dist = dir.magnitude;
-
-        if (dist > Mathf.Min(maxDistance, lamp.range)) return false;
-
-        // в конусе луча? (берём чуть шире половины угла — чтобы не надо было целиться в пиксель)
-        float half = lamp.type == LightType.Spot ? lamp.spotAngle * 0.5f + 5f : 30f;
-        if (Vector3.Angle(lamp.transform.forward, dir) > half) return false;
-
-        // ничего не загораживает? (стена, дверь)
-        if (Physics.Raycast(from, dir / dist, out RaycastHit hit, dist + 0.5f, ~0, QueryTriggerInteraction.Ignore))
+        Vector3 origin = lamp.transform.position;
+        if ((insideZone != null && !insideZone.bounds.Contains(origin)) || !IsLit(lamp, origin))
         {
-            if (hit.transform == transform || hit.transform.IsChildOf(transform)) return true;
-            if (model != null && (hit.transform == model || hit.transform.IsChildOf(model))) return true;
-            // луч упёрся во что-то прямо у кровати (одеяло, тумбочка, сама кровать) — тоже считается
-            Bounds b = TargetBounds();
-            b.Expand(0.4f);
-            return b.Contains(hit.point);
+            timer = 0f;
+            return;
         }
-        return true;
+
+        timer += Time.deltaTime;
+        if (timer < holdTime) return;
+
+        done = true;
+        onLit?.Invoke();
     }
 
-    Bounds TargetBounds()
+    bool IsLit(Light lamp, Vector3 origin)
     {
-        Transform t = model != null ? model : transform;
-        Renderer[] rs = t.GetComponentsInChildren<Renderer>();
-        bool any = false;
-        Bounds b = new Bounds(t.position, Vector3.zero);
-        foreach (Renderer r in rs)
+        float range = Mathf.Min(maxDistance, lamp.range);
+        Transform target = Target;
+        if (!target.gameObject.activeInHierarchy || range <= 0f) return false;
+
+        Vector3 forward = lamp.transform.forward;
+        // Прямое попадание засчитывается и у края длинной кровати.
+        if (Physics.Raycast(origin, forward, out RaycastHit hit, range, ~0, QueryTriggerInteraction.Ignore) &&
+            (hit.transform == target || hit.transform.IsChildOf(target)))
+            return true;
+
+        float halfAngle = lamp.type == LightType.Spot ? lamp.spotAngle * 0.5f : 30f;
+        float angleCosine = Mathf.Cos(halfAngle * Mathf.Deg2Rad);
+        foreach (Renderer renderer in targetRenderers)
         {
-            if (!r.enabled) continue;
-            if (!any) { b = r.bounds; any = true; } else b.Encapsulate(r.bounds);
+            if (!renderer.enabled || !renderer.gameObject.activeInHierarchy) continue;
+
+            Bounds bounds = renderer.bounds;
+            Vector3 upperCenter = bounds.center + Vector3.up * (bounds.extents.y * 0.65f);
+            Vector3 side = bounds.extents.x > bounds.extents.z
+                ? Vector3.right * (bounds.extents.x * 0.65f)
+                : Vector3.forward * (bounds.extents.z * 0.65f);
+
+            if (InBeam(bounds.center, origin, forward, range, angleCosine, target) ||
+                InBeam(upperCenter, origin, forward, range, angleCosine, target) ||
+                InBeam(upperCenter + side, origin, forward, range, angleCosine, target) ||
+                InBeam(upperCenter - side, origin, forward, range, angleCosine, target))
+                return true;
         }
-        if (!any)
-        {
-            Collider c = t.GetComponentInChildren<Collider>();
-            if (c != null) b = c.bounds;
-        }
-        return b;
+        return false;
     }
 
-    Vector3 Center()
+    static bool InBeam(Vector3 point, Vector3 origin, Vector3 forward, float range, float angleCosine, Transform target)
     {
-        if (model != null) return TargetBounds().center;
-        Collider c = GetComponentInChildren<Collider>();
-        if (c != null) return c.bounds.center;
-        Renderer r = GetComponentInChildren<Renderer>();
-        return r != null ? r.bounds.center : transform.position;
+        Vector3 offset = point - origin;
+        float distance = offset.magnitude;
+        if (distance <= Mathf.Epsilon || distance > range) return false;
+
+        Vector3 direction = offset / distance;
+        if (Vector3.Dot(forward, direction) < angleCosine) return false;
+
+        return !Physics.Raycast(origin, direction, out RaycastHit hit, distance, ~0, QueryTriggerInteraction.Ignore) ||
+               (hit.transform == target || hit.transform.IsChildOf(target));
     }
 }
