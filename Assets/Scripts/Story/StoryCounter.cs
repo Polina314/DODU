@@ -20,6 +20,9 @@ public class StoryCounter : MonoBehaviour
     int current;
     bool started, finished;
 
+    public bool IsRunning => started && !finished;
+    public bool IsComplete => finished;
+
     public void Begin()
     {
         started = true;
@@ -30,9 +33,14 @@ public class StoryCounter : MonoBehaviour
 
     public void Add()
     {
-        if (!started || finished) return;
-        current++;
-        if (ObjectiveUI.Instance != null) ObjectiveUI.Instance.AddProgress();
+        SetProgress(current + 1);
+    }
+
+    public void SetProgress(int value)
+    {
+        if (!IsRunning) return;
+        current = Mathf.Clamp(value, 0, total);
+        if (ObjectiveUI.Instance != null) ObjectiveUI.Instance.SetCounterProgress(current);
         if (current >= total)
         {
             finished = true;

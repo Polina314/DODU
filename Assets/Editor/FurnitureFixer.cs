@@ -117,9 +117,11 @@ public class FurnitureFixer : EditorWindow
     static bool Skipped(Transform t, string meshPath)
     {
         Transform top = t.root;
-        // внутри Hospital пропускаем только саму больницу (меши из модели больницы), а мебель внутри — нет
-        if (top.name.StartsWith("Hospital") && !top.name.StartsWith("Hospital_Lights")
-            && (string.IsNullOrEmpty(meshPath) || meshPath.ToLower().Contains("hospital"))) return true;
+        // Bed_Hospital — мебель. Сама геометрия здания импортирована из Hospital.fbx.
+        if (top.name.StartsWith("Hospital") && !top.name.StartsWith("Hospital_Lights") &&
+            (string.IsNullOrEmpty(meshPath) ||
+             System.IO.Path.GetFileNameWithoutExtension(meshPath).Equals("Hospital", System.StringComparison.OrdinalIgnoreCase)))
+            return true;
         foreach (string s in skipRoots)
             if (top.name == s || top.name.StartsWith(s + " ") || top.name.StartsWith(s + "_") || (s == "Chapter" && top.name.StartsWith("Chapter")))
                 return true;
@@ -206,43 +208,104 @@ public class FurnitureFixer : EditorWindow
 
     void AddColliders()
     {
-        int added = 0, fixedMesh = 0, layerFix = 0;
-        int playerLayer = 0;
-        CharacterController cc = AllInScene<CharacterController>().FirstOrDefault();
-        if (cc != null) playerLayer = cc.gameObject.layer;
-        foreach (Piece p in pieces)
+        Say(AddSolidColliders(pieces.SelectMany(p => p.root.GetComponentsInChildren<MeshFilter>(true)).Distinct()));
+    }
+
+    [MenuItem("Catatonia/Добавить коллайдеры всей мебели")]
+    static void MakeFurnitureSolid()
+    {
+        var scene = EditorSceneManager.GetActiveScene();
+        Undo.IncrementCurrentGroup();
+        int group = Undo.GetCurrentGroup();
+        Undo.SetCurrentGroupName("Добавить коллайдеры всей мебели");
+        var meshes = AllInScene<MeshFilter>().Where(mf => mf.gameObject.scene == scene &&
+            mf.gameObject.activeInHierarchy && mf.TryGetComponent(out MeshRenderer renderer) &&
+            renderer.enabled && IsFurnitureMesh(mf)).ToArray();
+
+        string result = AddSolidColliders(meshes);
+        Undo.CollapseUndoOperations(group);
+        EditorUtility.DisplayDialog("Коллайдеры мебели", result + "\nПроверено моделей: " + meshes.Length +
+            "\nCtrl+S — сохранить сцену.", "OK");
+    }
+
+    [MenuItem("Catatonia/Добавить коллайдеры всей мебели", true)]
+    static bool CanMakeFurnitureSolid() => !EditorApplication.isPlayingOrWillChangePlaymode;
+
+    static bool IsFurnitureMesh(MeshFilter filter)
+    {
+        if (filter.sharedMesh == null) return false;
+        string path = AssetDatabase.GetAssetPath(filter.sharedMesh);
+        return (path.StartsWith("Assets/Furniture/") || path.StartsWith("Assets/Furniture_for_Unity/")) &&
+               System.IO.Path.GetFileNameWithoutExtension(path) != "Room_Signs";
+    }
+
+    static string AddSolidColliders(IEnumerable<MeshFilter> meshes)
+    {
+        int added = 0, repaired = 0, layerFix = 0;
+        CharacterController player = AllInScene<CharacterController>()
+            .FirstOrDefault(cc => cc.gameObject.scene == EditorSceneManager.GetActiveScene());
+        int playerLayer = player != null ? player.gameObject.layer : 0;
+
+        foreach (MeshFilter filter in meshes)
         {
-            foreach (MeshFilter mf in p.root.GetComponentsInChildren<MeshFilter>(true))
+            if (filter.sharedMesh == null || !filter.TryGetComponent<MeshRenderer>(out _)) continue;
+            GameObject obj = filter.gameObject;
+            Rigidbody body = obj.GetComponentInParent<Rigidbody>(true);
+            Collider solid = null;
+            foreach (Collider collider in obj.GetComponents<Collider>())
             {
-                if (mf.sharedMesh == null || mf.GetComponent<MeshRenderer>() == null) continue;
-                bool solid = false;
-                foreach (Collider c in mf.GetComponents<Collider>())
+                if (collider.isTrigger) continue;
+                if (collider is MeshCollider meshCollider)
                 {
-                    MeshCollider m = c as MeshCollider;
-                    if (m != null && m.sharedMesh == null)
+                    if (body != null && !body.isKinematic && !meshCollider.convex) continue;
+                    if (meshCollider.sharedMesh == null)
                     {
-                        Undo.RecordObject(m, "Коллайдер"); m.sharedMesh = mf.sharedMesh; fixedMesh++;
+                        Undo.RecordObject(meshCollider, "Коллайдер мебели");
+                        meshCollider.sharedMesh = filter.sharedMesh;
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(meshCollider);
+                        repaired++;
                     }
-                    if (!c.enabled) { Undo.RecordObject(c, "Коллайдер"); c.enabled = true; fixedMesh++; }
-                    if (!c.isTrigger) solid = true;
                 }
-                if (!solid)
+
+                if (!collider.enabled)
                 {
-                    MeshCollider mc = Undo.AddComponent<MeshCollider>(mf.gameObject);
-                    mc.sharedMesh = mf.sharedMesh;
-                    added++;
+                    Undo.RecordObject(collider, "Коллайдер мебели");
+                    collider.enabled = true;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(collider);
+                    repaired++;
                 }
-                // слой, который не сталкивается с игроком (настройки Physics) — перевести в Default
-                if (Physics.GetIgnoreLayerCollision(playerLayer, mf.gameObject.layer))
+                solid = collider;
+                break;
+            }
+
+            if (solid == null)
+            {
+                if (body != null && !body.isKinematic)
                 {
-                    Undo.RecordObject(mf.gameObject, "Слой");
-                    mf.gameObject.layer = 0;
-                    layerFix++;
+                    BoxCollider box = Undo.AddComponent<BoxCollider>(obj);
+                    box.center = filter.sharedMesh.bounds.center;
+                    box.size = filter.sharedMesh.bounds.size;
                 }
+                else
+                {
+                    MeshCollider mesh = Undo.AddComponent<MeshCollider>(obj);
+                    mesh.sharedMesh = filter.sharedMesh;
+                }
+                added++;
+            }
+
+            if (Physics.GetIgnoreLayerCollision(playerLayer, obj.layer) &&
+                !Physics.GetIgnoreLayerCollision(playerLayer, 0))
+            {
+                Undo.RecordObject(obj, "Слой коллайдера мебели");
+                obj.layer = 0;
+                PrefabUtility.RecordPrefabInstancePropertyModifications(obj);
+                layerFix++;
             }
         }
-        Say("✓ Коллайдеров добавлено: " + added + (fixedMesh > 0 ? ", исправлено сломанных: " + fixedMesh : "") +
-            (layerFix > 0 ? ", переведено на слой Default: " + layerFix : ""));
+
+        return "Добавлено коллайдеров: " + added + ", восстановлено: " + repaired +
+               ", переведено на слой Default: " + layerFix;
     }
 
     // ---------------------------------------------------------------------

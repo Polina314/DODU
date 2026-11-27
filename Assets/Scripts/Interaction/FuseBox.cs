@@ -39,6 +39,8 @@ public class FuseBox : MonoBehaviour
     [Header("События")]
     [Tooltip("Все 3 рубильника включены (срабатывает 1 раз): включить свет на этаже, лифт и т.д.")]
     public UnityEvent onAllOn;
+    [Tooltip("Сюжетный счётчик. Рубильники доступны после начала задания, счётчик показывает число поднятых.")]
+    public StoryCounter storyCounter;
     [Tooltip("Отдельные события на каждый рубильник (необязательно)")]
     public UnityEvent onLever1On, onLever2On, onLever3On;
 
@@ -90,7 +92,17 @@ public class FuseBox : MonoBehaviour
 
     void AddPart(Transform t, int index)
     {
-        if (!t.GetComponent<Collider>()) t.gameObject.AddComponent<BoxCollider>();
+        if (!t.TryGetComponent<Collider>(out _))
+        {
+            BoxCollider hitbox = t.gameObject.AddComponent<BoxCollider>();
+            if (t.TryGetComponent(out MeshFilter filter) && filter.sharedMesh != null)
+            {
+                hitbox.center = filter.sharedMesh.bounds.center;
+                // У рукояток оставляем небольшой запас для прицеливания.
+                Vector3 padding = index < 0 ? Vector3.zero : new Vector3(0.025f, 0.025f, 0.02f);
+                hitbox.size = filter.sharedMesh.bounds.size + padding;
+            }
+        }
         var p = t.GetComponent<FuseBoxPart>();
         if (p == null) p = t.gameObject.AddComponent<FuseBoxPart>();
         p.box = this; p.index = index;
@@ -100,7 +112,7 @@ public class FuseBox : MonoBehaviour
     public string PromptFor(int index)
     {
         if (index < 0) return doorLocked ? "Заперто" : (DoorOpen ? "Закрыть щиток" : "Открыть щиток");
-        if (!DoorOpen) return "";
+        if (!DoorOpen || !CanUseLever(index)) return "";
         return on[index] ? $"Выключить рубильник {index + 1}" : $"Включить рубильник {index + 1}";
     }
 
@@ -123,9 +135,15 @@ public class FuseBox : MonoBehaviour
         doorMove = StartCoroutine(Rotate(door, DoorOpen ? doorClosed * Quaternion.Euler(0f, doorOpenAngle, 0f) : doorClosed, doorTime, true));
     }
 
+    bool CanUseLever(int index)
+    {
+        return index >= 0 && index < levers.Length && levers[index] != null &&
+               (storyCounter == null || storyCounter.IsRunning);
+    }
+
     public void ToggleLever(int i)
     {
-        if (levers[i] == null) return;
+        if (!CanUseLever(i)) return;
         on[i] = !on[i];
         Play(leverSound);
         if (leverMove[i] != null) StopCoroutine(leverMove[i]);
@@ -134,7 +152,9 @@ public class FuseBox : MonoBehaviour
         UpdateLamp(i);
         if (on[i]) (i == 0 ? onLever1On : i == 1 ? onLever2On : onLever3On)?.Invoke();
 
-        AllOn = on[0] && on[1] && on[2];
+        int raised = (on[0] ? 1 : 0) + (on[1] ? 1 : 0) + (on[2] ? 1 : 0);
+        AllOn = raised == levers.Length;
+        if (storyCounter != null) storyCounter.SetProgress(raised);
         if (AllOn && !allOnFired)
         {
             allOnFired = true;

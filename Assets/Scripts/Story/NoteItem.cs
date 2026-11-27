@@ -21,6 +21,8 @@ public class NoteItem : MonoBehaviour, IInteractable
 
     [Tooltip("После того как игрок ЗАКРЫЛ записку в первый раз. Сюда удобно ставить мысли героя (Say) и новую задачу")]
     public UnityEvent onAfterClose;
+    [Tooltip("Можно читать сразу. Событие после закрытия подождёт завершения этого задания.")]
+    [SerializeField] StoryCounter deferAfterCloseUntil;
 
     bool read;
 
@@ -54,7 +56,13 @@ public class NoteItem : MonoBehaviour, IInteractable
     IEnumerator WaitClose(bool first)
     {
         while (NoteUI.Instance != null && NoteUI.Instance.IsOpen) yield return null;
-        if (first) onAfterClose.Invoke();
+        if (first)
+        {
+            if (deferAfterCloseUntil != null && !deferAfterCloseUntil.IsComplete)
+                deferAfterCloseUntil.onComplete.AddListener(FinishFirstRead);
+            else
+                FinishFirstRead();
+        }
         if (takeAfterReading)
         {
             InventoryUI.AddNote(title, text, image);   // записку можно перечитать в инвентаре (I)
@@ -62,5 +70,22 @@ public class NoteItem : MonoBehaviour, IInteractable
             foreach (Renderer r in GetComponentsInChildren<Renderer>()) r.enabled = false;
             foreach (Collider c in GetComponentsInChildren<Collider>()) c.enabled = false;
         }
+    }
+
+    void FinishFirstRead()
+    {
+        RemoveDeferredListener();
+        onAfterClose?.Invoke();
+    }
+
+    void OnDestroy()
+    {
+        RemoveDeferredListener();
+    }
+
+    void RemoveDeferredListener()
+    {
+        if (deferAfterCloseUntil != null)
+            deferAfterCloseUntil.onComplete.RemoveListener(FinishFirstRead);
     }
 }

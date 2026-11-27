@@ -56,10 +56,16 @@ public class ObjectiveUI : MonoBehaviour
 
     public void AddProgress()
     {
+        SetCounterProgress(counterCurrent + 1);
+    }
+
+    public void SetCounterProgress(int value)
+    {
         if (counterTotal <= 0) return;
-        counterCurrent = Mathf.Min(counterCurrent + 1, counterTotal);
+        bool alreadyComplete = counterCurrent >= counterTotal;
+        counterCurrent = Mathf.Clamp(value, 0, counterTotal);
         Refresh();
-        if (counterCurrent >= counterTotal) onCounterComplete.Invoke();
+        if (!alreadyComplete && counterCurrent >= counterTotal) onCounterComplete?.Invoke();
     }
 
     public void Clear()

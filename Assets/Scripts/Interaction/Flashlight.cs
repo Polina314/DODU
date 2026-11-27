@@ -51,6 +51,7 @@ public class Flashlight : MonoBehaviour
     {
         if (lamp == null) lamp = GetComponent<Light>();
         baseIntensity = lamp.intensity;
+        lamp.renderMode = LightRenderMode.ForcePixel;
         lamp.enabled = false;
     }
 
